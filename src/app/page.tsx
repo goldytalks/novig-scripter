@@ -168,7 +168,34 @@ function extractVideoId(url: string): string | null {
   return m ? m[1] : null;
 }
 
+function parseCaptionXml(xml: string): string {
+  // Try <text> tags (manual captions)
+  const textMatches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/gs)];
+  if (textMatches.length > 0) {
+    const t = textMatches
+      .map((m) => m[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\n/g, " "))
+      .join(" ").trim();
+    if (t.length > 10) return t;
+  }
+  // Try <p><s> tags (ASR auto-generated)
+  const pMatches = [...xml.matchAll(/<p [^>]*>([\s\S]*?)<\/p>/gs)];
+  if (pMatches.length > 0) {
+    const words: string[] = [];
+    for (const pm of pMatches) {
+      const sMatches = [...pm[1].matchAll(/<s[^>]*>(.*?)<\/s>/gs)];
+      for (const sm of sMatches) {
+        const w = sm[1].replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+        if (w) words.push(w);
+      }
+    }
+    return words.join(" ").trim();
+  }
+  return "";
+}
+
 async function clientExtractTranscript(videoId: string): Promise<string | null> {
+  // Step 1: Get caption tracks via Innertube ANDROID client (browser can call this)
+  let captionUrl: string | null = null;
   try {
     const playerRes = await fetch(
       "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
@@ -183,52 +210,54 @@ async function clientExtractTranscript(videoId: string): Promise<string | null> 
         }),
       }
     );
-
     if (playerRes.ok) {
       const playerData = await playerRes.json();
-      const captionTracks =
-        playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-      if (captionTracks && captionTracks.length > 0) {
-        const track =
-          captionTracks.find(
-            (t: { languageCode: string }) => t.languageCode === "en"
-          ) || captionTracks[0];
+      const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (tracks && tracks.length > 0) {
+        const track = tracks.find((t: { languageCode: string }) => t.languageCode === "en") || tracks[0];
+        captionUrl = track.baseUrl;
 
-        const capRes = await fetch(track.baseUrl);
-        const xml = await capRes.text();
-        if (xml && xml.length >= 50) {
-          // Try <text> tags (manual captions)
-          let transcript = "";
-          const textMatches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/gs)];
-          if (textMatches.length > 0) {
-            transcript = textMatches
-              .map((m) => m[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\n/g, " "))
-              .join(" ").trim();
-          }
-          // Try <p><s> tags (ASR auto-generated)
-          if (!transcript) {
-            const pMatches = [...xml.matchAll(/<p [^>]*>([\s\S]*?)<\/p>/gs)];
-            const words: string[] = [];
-            for (const pm of pMatches) {
-              const sMatches = [...pm[1].matchAll(/<s[^>]*>(.*?)<\/s>/gs)];
-              for (const sm of sMatches) {
-                const w = sm[1].replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
-                if (w) words.push(w);
-              }
+        // Try fetching caption XML directly (may fail due to CORS)
+        try {
+          const capRes = await fetch(captionUrl!);
+          const xml = await capRes.text();
+          if (xml && xml.length >= 50) {
+            const transcript = parseCaptionXml(xml);
+            if (transcript.length > 10) {
+              console.log("[client] Direct caption fetch success:", transcript.length, "chars");
+              return transcript;
             }
-            transcript = words.join(" ").trim();
           }
-          if (transcript.length > 10) {
-            console.log("[client] Direct extraction success:", transcript.length, "chars");
-            return transcript;
-          }
+        } catch {
+          console.log("[client] Direct caption fetch blocked by CORS, using server proxy");
         }
       }
     }
   } catch (e) {
-    console.log("[client] Direct extraction failed:", (e as Error).message);
+    console.log("[client] Innertube player call failed:", (e as Error).message);
   }
 
+  // Step 2: Send caption URL to server proxy to fetch (avoids CORS)
+  if (captionUrl) {
+    try {
+      const proxyRes = await fetch("/api/transcript", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId, captionUrl }),
+      });
+      if (proxyRes.ok) {
+        const data = await proxyRes.json();
+        if (data.transcript && data.transcript.length > 10) {
+          console.log("[client] Caption URL proxy success:", data.transcript.length, "chars");
+          return data.transcript;
+        }
+      }
+    } catch (e) {
+      console.log("[client] Caption URL proxy failed:", (e as Error).message);
+    }
+  }
+
+  // Step 3: Fall back to full server-side extraction
   try {
     const proxyRes = await fetch("/api/transcript", {
       method: "POST",
