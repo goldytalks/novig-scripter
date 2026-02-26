@@ -229,7 +229,23 @@ async function clientExtractTranscript(videoId: string): Promise<string | null> 
             }
           }
         } catch {
-          console.log("[client] Direct caption fetch blocked by CORS, using server proxy");
+          console.log("[client] Direct caption fetch blocked by CORS, trying CORS proxy");
+        }
+
+        // Try CORS proxy to fetch caption XML from browser
+        try {
+          const proxyUrl = "https://corsproxy.io/?" + encodeURIComponent(captionUrl!);
+          const capRes = await fetch(proxyUrl);
+          const xml = await capRes.text();
+          if (xml && xml.length >= 50) {
+            const transcript = parseCaptionXml(xml);
+            if (transcript.length > 10) {
+              console.log("[client] CORS proxy caption fetch success:", transcript.length, "chars");
+              return transcript;
+            }
+          }
+        } catch {
+          console.log("[client] CORS proxy also failed");
         }
       }
     }
