@@ -56,7 +56,9 @@ export async function POST(req: NextRequest) {
     const isTranscriptError =
       message.includes("Transcript is disabled") ||
       message.includes("No transcript available") ||
-      message.includes("require a manual transcript");
+      message.includes("require a manual transcript") ||
+      message.includes("Could not transcribe") ||
+      message.includes("GOOGLE_AI_KEY");
 
     return NextResponse.json(
       {

@@ -74,52 +74,127 @@ async function tryYouTubeCaptions(videoId: string): Promise<string | null> {
   return null;
 }
 
-// ── Method 2: Gemini YouTube URL transcription (works from any IP) ──
+// ── Method 2: Google Gemini API with native YouTube video processing ──
+// This uses the Gemini API directly (not OpenRouter) because only the native
+// API actually processes YouTube video content. OpenRouter just passes text.
 
-async function tryGeminiVideoTranscription(
+async function tryGeminiNativeTranscription(
   videoId: string
 ): Promise<string | null> {
+  const apiKey = process.env.GOOGLE_AI_KEY;
+  if (!apiKey) {
+    console.log("[transcript] No GOOGLE_AI_KEY configured, skipping Gemini native");
+    return null;
+  }
+
   try {
-    console.log(`[transcript] Trying Gemini video transcription for ${videoId}...`);
+    console.log(`[transcript] Trying Gemini native API for ${videoId}...`);
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.0-flash-001",
-        messages: [
-          {
-            role: "user",
-            content: `Please transcribe the spoken words in this YouTube video verbatim. Output ONLY the transcript text, nothing else. No timestamps, no labels, no commentary. Video: ${videoUrl}`,
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: "Transcribe the spoken words in this video verbatim in English. Output ONLY the transcript text. No timestamps, labels, or commentary.",
+                },
+                {
+                  fileData: {
+                    mimeType: "video/*",
+                    fileUri: videoUrl,
+                  },
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 4000,
           },
-        ],
-        max_tokens: 4000,
-        temperature: 0,
-      }),
-    });
+        }),
+      }
+    );
 
     if (!res.ok) {
       const errText = await res.text();
-      console.log(`[transcript] Gemini video API error: ${res.status} ${errText.substring(0, 200)}`);
+      console.log(`[transcript] Gemini native API error: ${res.status} ${errText.substring(0, 200)}`);
       return null;
     }
 
     const data = await res.json();
-    const text = data.choices?.[0]?.message?.content?.trim();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     if (text && text.length > 10) {
-      console.log(`[transcript] Gemini video transcription success: ${text.length} chars`);
+      console.log(`[transcript] Gemini native success: ${text.length} chars`);
       return text;
     }
-    console.log(`[transcript] Gemini returned empty/short response`);
+    console.log("[transcript] Gemini native returned empty response");
     return null;
   } catch (e) {
-    console.log(`[transcript] Gemini video transcription error: ${(e as Error).message}`);
+    console.log(`[transcript] Gemini native error: ${(e as Error).message}`);
     return null;
   }
+}
+
+// ── Method 3: Invidious captions (free proxy, no auth) ──
+
+async function tryInvidiousCaptions(videoId: string): Promise<string | null> {
+  const instances = [
+    "https://inv.nadeko.net",
+    "https://iv.ggtyler.dev",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.lunar.icu",
+  ];
+
+  for (const base of instances) {
+    try {
+      const res = await fetch(`${base}/api/v1/captions/${videoId}`, {
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const captions = data.captions || [];
+      if (captions.length === 0) continue;
+
+      // Prefer English, fall back to first available
+      const enCap = captions.find(
+        (c: { languageCode: string }) => c.languageCode === "en"
+      ) || captions[0];
+
+      const capUrl = enCap.url.startsWith("http")
+        ? enCap.url
+        : base + enCap.url;
+      const capRes = await fetch(capUrl, { signal: AbortSignal.timeout(5000) });
+      const xml = await capRes.text();
+      if (xml.length < 50) continue;
+
+      // Parse XML captions
+      const textMatches = [...xml.matchAll(new RegExp("<text[^>]*>(.*?)</text>", "gs"))];
+      if (textMatches.length === 0) continue;
+      const transcript = textMatches
+        .map((m) =>
+          m[1]
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&#39;/g, "'")
+            .replace(/&quot;/g, '"')
+        )
+        .join(" ")
+        .trim();
+      if (transcript.length > 10) {
+        console.log(`[transcript] Invidious (${base}) success: ${transcript.length} chars`);
+        return transcript;
+      }
+    } catch (e) {
+      console.log(`[transcript] Invidious ${base} error: ${(e as Error).message.substring(0, 60)}`);
+    }
+  }
+  return null;
 }
 
 async function withTimeout<T>(
@@ -130,7 +205,10 @@ async function withTimeout<T>(
   return Promise.race([
     promise,
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+      setTimeout(
+        () => reject(new Error(`${label} timed out after ${ms}ms`)),
+        ms
+      )
     ),
   ]);
 }
@@ -186,13 +264,13 @@ export async function fetchTranscript(
     };
   }
 
-  // ── YouTube: captions → Gemini video transcription ──
+  // ── YouTube: captions → Gemini native → Invidious ──
   if (platform === "youtube") {
     const videoId = extractYouTubeVideoId(url);
     if (!videoId) throw new Error("Invalid YouTube URL.");
     const { title, channel } = await fetchYouTubeMeta(videoId);
 
-    // Try captions first (fastest, cheapest)
+    // 1. Try YouTube captions (fastest, free)
     const captions = await tryYouTubeCaptions(videoId);
     if (captions) {
       return {
@@ -201,12 +279,12 @@ export async function fetchTranscript(
       };
     }
 
-    // Gemini can natively process YouTube videos by URL — no audio download needed
+    // 2. Try Gemini native API (actually processes the video)
     const geminiTranscript = await withTimeout(
-      tryGeminiVideoTranscription(videoId),
-      45000,
-      "Gemini video transcription"
-    );
+      tryGeminiNativeTranscription(videoId),
+      50000,
+      "Gemini native transcription"
+    ).catch(() => null);
     if (geminiTranscript) {
       _lastAudioError = "";
       return {
@@ -215,9 +293,19 @@ export async function fetchTranscript(
       };
     }
 
-    _lastAudioError = "Both captions and Gemini video transcription failed";
+    // 3. Try Invidious captions
+    const invidiousTranscript = await tryInvidiousCaptions(videoId);
+    if (invidiousTranscript) {
+      _lastAudioError = "";
+      return {
+        transcript: invidiousTranscript,
+        meta: { videoId, title, channel, platform: "youtube" },
+      };
+    }
+
+    _lastAudioError = "All transcript methods failed. Ensure GOOGLE_AI_KEY is set.";
     throw new Error(
-      "Could not transcribe this video. Captions unavailable and AI transcription failed."
+      "Could not transcribe this video. Paste the transcript manually, or check that GOOGLE_AI_KEY is configured."
     );
   }
 
