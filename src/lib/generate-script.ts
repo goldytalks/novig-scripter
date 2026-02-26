@@ -165,7 +165,7 @@ export async function generateScript(
 
   const response = await client.chat.completions.create({
     model: SCRIPT_MODEL,
-    max_tokens: 1200,
+    max_tokens: 2000,
     temperature: 0.5, // slightly higher for more creative hooks
     messages,
   });
