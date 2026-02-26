@@ -5,6 +5,7 @@ export interface ScriptSettings {
   style: "hype" | "analytical" | "conversational";
   includeGraphics: boolean;
   includeStats: boolean;
+  customHook?: string;
 }
 
 export interface UsageInfo {
@@ -21,6 +22,29 @@ export interface ScriptSections {
   cta: string;
 }
 
+export interface TimelineClip {
+  id: string;
+  section: "hook" | "body" | "cta";
+  label: string;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  startFrame: number;
+  endFrame: number;
+  durationFrames: number;
+  text: string;
+  wordCount: number;
+  footage: string;
+  overlays: string[];
+}
+
+export interface EditingTimeline {
+  fps: number;
+  totalDurationSec: number;
+  totalFrames: number;
+  clips: TimelineClip[];
+}
+
 export interface GeneratedScript {
   sections: ScriptSections;
   fullScript: string;
@@ -33,6 +57,7 @@ export interface GeneratedScript {
   graphicsNeeded: string[];
   productionNotes: string[];
   hookAlternatives: string[];
+  timeline: EditingTimeline;
   usage: UsageInfo[];
   totalCost: number;
 }
@@ -66,6 +91,16 @@ function buildSystemPrompt(settings: ScriptSettings): string {
       ? `\n${settings.includeStats ? "- Add [STAT: ...] markers where on-screen stats should appear." : ""}${settings.includeGraphics ? "\n- Add [GFX: ...] markers where visual overlays should appear." : ""}`
       : "";
 
+  const customHook = settings.customHook?.trim();
+  const hookInstruction = customHook
+    ? `(USE THIS EXACT HOOK — do not modify it:\n"${customHook}")`
+    : `(~${hookWords} words, ~3 seconds. This is THE most important part. Make it controversial, bold, or create FOMO. Examples of great hooks:
+- "This MAY BE CONTROVERSIAL, but NBA Wednesday might be the EASIEST path to a 3-0 sweep"
+- "Everyone's sleeping on this prop and it's basically free money"
+- "I found a stat that Vegas doesn't want you to see"
+- "Three picks. One night. Zero losses. Here's the play."
+The hook must STOP THE SCROLL. No "hey guys", no "what's up". Make a bold claim or tease the payoff.)`;
+
   return `You write short-form sports betting video scripts for Novig (zero-vig betting exchange, fairest odds).
 
 VOICE: ${styleGuide[settings.style]}
@@ -75,12 +110,7 @@ Rewrite the transcript into a ${settings.targetSeconds}s script (~${wordTarget} 
 OUTPUT THE SCRIPT IN EXACTLY THIS FORMAT:
 
 [HOOK]
-(~${hookWords} words, ~3 seconds. This is THE most important part. Make it controversial, bold, or create FOMO. Examples of great hooks:
-- "This MAY BE CONTROVERSIAL, but NBA Wednesday might be the EASIEST path to a 3-0 sweep"
-- "Everyone's sleeping on this prop and it's basically free money"
-- "I found a stat that Vegas doesn't want you to see"
-- "Three picks. One night. Zero losses. Here's the play."
-The hook must STOP THE SCROLL. No "hey guys", no "what's up". Make a bold claim or tease the payoff.)
+${hookInstruction}
 
 [BODY]
 (~${bodyWords} words. The actual picks, analysis, and reasoning. This is where the substance lives.)
@@ -179,6 +209,16 @@ export async function generateScript(
     graphicsNeeded.push(match[2].trim());
   }
 
+  // Build editing timeline
+  const FPS = 30;
+  const timeline = buildTimeline(
+    sections,
+    { hookSeconds, bodySeconds, ctaSeconds },
+    footage,
+    graphicsNeeded,
+    FPS
+  );
+
   return {
     sections,
     fullScript,
@@ -191,6 +231,7 @@ export async function generateScript(
     graphicsNeeded,
     productionNotes: notes,
     hookAlternatives: hookAlts,
+    timeline,
     usage: [
       {
         model: SCRIPT_MODEL,
@@ -201,5 +242,64 @@ export async function generateScript(
       },
     ],
     totalCost: cost,
+  };
+}
+
+function buildTimeline(
+  sections: ScriptSections,
+  durations: { hookSeconds: number; bodySeconds: number; ctaSeconds: number },
+  footage: string[],
+  graphics: string[],
+  fps: number
+): EditingTimeline {
+  let cursor = 0;
+  const clips: TimelineClip[] = [];
+
+  const sectionDefs: {
+    id: string;
+    section: "hook" | "body" | "cta";
+    label: string;
+    text: string;
+    dur: number;
+  }[] = [
+    { id: "hook", section: "hook", label: "HOOK", text: sections.hook, dur: durations.hookSeconds },
+    { id: "body", section: "body", label: "BODY", text: sections.body, dur: durations.bodySeconds },
+    { id: "cta", section: "cta", label: "CTA", text: sections.cta, dur: durations.ctaSeconds },
+  ];
+
+  for (const def of sectionDefs) {
+    if (!def.text) continue;
+    const startSec = cursor;
+    const endSec = cursor + def.dur;
+
+    // Collect overlays for this section
+    const overlays: string[] = [];
+    for (const m of def.text.matchAll(/\[(GFX|STAT):\s*([^\]]+)\]/g)) {
+      overlays.push(`[${m[1]}] ${m[2].trim()}`);
+    }
+
+    clips.push({
+      id: def.id,
+      section: def.section,
+      label: def.label,
+      startSec,
+      endSec,
+      durationSec: def.dur,
+      startFrame: Math.round(startSec * fps),
+      endFrame: Math.round(endSec * fps),
+      durationFrames: Math.round(def.dur * fps),
+      text: def.text,
+      wordCount: def.text.split(/\s+/).filter(Boolean).length,
+      footage: footage[clips.length] || "",
+      overlays,
+    });
+    cursor = endSec;
+  }
+
+  return {
+    fps,
+    totalDurationSec: cursor,
+    totalFrames: Math.round(cursor * fps),
+    clips,
   };
 }

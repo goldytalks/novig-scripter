@@ -7,6 +7,7 @@ interface ScriptSettings {
   style: "hype" | "analytical" | "conversational";
   includeGraphics: boolean;
   includeStats: boolean;
+  customHook?: string;
 }
 
 interface UsageInfo {
@@ -23,6 +24,29 @@ interface ScriptSections {
   cta: string;
 }
 
+interface TimelineClip {
+  id: string;
+  section: "hook" | "body" | "cta";
+  label: string;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  startFrame: number;
+  endFrame: number;
+  durationFrames: number;
+  text: string;
+  wordCount: number;
+  footage: string;
+  overlays: string[];
+}
+
+interface EditingTimeline {
+  fps: number;
+  totalDurationSec: number;
+  totalFrames: number;
+  clips: TimelineClip[];
+}
+
 interface GeneratedResult {
   sections: ScriptSections;
   fullScript: string;
@@ -35,6 +59,7 @@ interface GeneratedResult {
   graphicsNeeded: string[];
   productionNotes: string[];
   hookAlternatives: string[];
+  timeline: EditingTimeline;
   videoTitle: string;
   channel: string;
   platform: string;
@@ -112,6 +137,7 @@ export default function Home() {
     includeGraphics: true,
     includeStats: true,
   });
+  const [customHook, setCustomHook] = useState("");
   const [result, setResult] = useState<GeneratedResult | null>(null);
   const [editedSections, setEditedSections] = useState<ScriptSections | null>(
     null
@@ -167,7 +193,10 @@ export default function Home() {
         body: JSON.stringify({
           url: url.trim(),
           manualTranscript: manualTranscript.trim() || undefined,
-          settings,
+          settings: {
+            ...settings,
+            customHook: customHook.trim() || undefined,
+          },
         }),
       });
 
@@ -229,6 +258,65 @@ export default function Home() {
 
   function copyFullScript() {
     navigator.clipboard.writeText(editedFullScript);
+  }
+
+  // Rebuild timeline from edited sections
+  const editedTimeline = useMemo((): EditingTimeline | null => {
+    if (!editedSections || !result?.timeline) return null;
+    const fps = result.timeline.fps;
+    const clips: TimelineClip[] = [];
+    let cursor = 0;
+
+    const defs: { id: string; section: "hook" | "body" | "cta"; label: string; text: string }[] = [
+      { id: "hook", section: "hook", label: "HOOK", text: editedSections.hook },
+      { id: "body", section: "body", label: "BODY", text: editedSections.body },
+      { id: "cta", section: "cta", label: "CTA", text: editedSections.cta },
+    ];
+
+    for (let i = 0; i < defs.length; i++) {
+      const def = defs[i];
+      if (!def.text) continue;
+      const words = def.text.split(/\s+/).filter(Boolean).length;
+      const dur = Math.round(words / 2.8);
+      const overlays: string[] = [];
+      for (const m of def.text.matchAll(/\[(GFX|STAT):\s*([^\]]+)\]/g)) {
+        overlays.push(`[${m[1]}] ${m[2].trim()}`);
+      }
+      clips.push({
+        id: def.id,
+        section: def.section,
+        label: def.label,
+        startSec: cursor,
+        endSec: cursor + dur,
+        durationSec: dur,
+        startFrame: Math.round(cursor * fps),
+        endFrame: Math.round((cursor + dur) * fps),
+        durationFrames: Math.round(dur * fps),
+        text: def.text,
+        wordCount: words,
+        footage: result.backgroundFootage[i] || "",
+        overlays,
+      });
+      cursor += dur;
+    }
+
+    return { fps, totalDurationSec: cursor, totalFrames: Math.round(cursor * fps), clips };
+  }, [editedSections, result]);
+
+  function exportTimelineJSON() {
+    if (!editedTimeline) return;
+    const blob = new Blob([JSON.stringify(editedTimeline, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `timeline-${result?.videoTitle?.replace(/[^a-z0-9]/gi, "-").toLowerCase() || "script"}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function copyTimelineJSON() {
+    if (!editedTimeline) return;
+    navigator.clipboard.writeText(JSON.stringify(editedTimeline, null, 2));
   }
 
   return (
@@ -348,6 +436,25 @@ export default function Home() {
                 + Override with manual transcript
               </button>
             )}
+
+          {/* Custom Hook */}
+          <div className="space-y-1.5">
+            <button
+              onClick={() => setCustomHook(customHook ? "" : " ")}
+              className="text-xs text-white/30 hover:text-white/50 transition-colors cursor-pointer"
+            >
+              {customHook ? "- Remove custom hook" : "+ Write your own hook"}
+            </button>
+            {customHook !== "" && (
+              <textarea
+                value={customHook}
+                onChange={(e) => setCustomHook(e.target.value)}
+                placeholder='e.g. "This MAY BE CONTROVERSIAL, but NBA Wednesday might be the EASIEST path to a 3-0 sweep with these picks"'
+                rows={2}
+                className="w-full bg-amber-500/5 border border-amber-500/20 rounded-lg px-4 py-3 text-sm placeholder:text-white/20 text-amber-200/80 focus:outline-none focus:border-amber-500/40 focus:ring-1 focus:ring-amber-500/20 transition-colors resize-y font-[family-name:var(--font-geist-mono)]"
+              />
+            )}
+          </div>
 
           {/* Settings */}
           <div className="flex flex-wrap items-center gap-6 p-4 bg-white/[0.03] border border-white/5 rounded-lg">
@@ -539,13 +646,23 @@ export default function Home() {
                 }
               />
 
-              {/* Copy full script */}
-              <button
-                onClick={copyFullScript}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer"
-              >
-                Copy Full Script
-              </button>
+              {/* Action buttons */}
+              <div className="flex gap-3">
+                <button
+                  onClick={copyFullScript}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+                >
+                  Copy Script
+                </button>
+                {editedTimeline && (
+                  <button
+                    onClick={exportTimelineJSON}
+                    className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 py-3 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+                  >
+                    Export Timeline
+                  </button>
+                )}
+              </div>
 
               {/* Token breakdown */}
               {result.usage && result.usage.length > 0 && (
@@ -648,6 +765,101 @@ export default function Home() {
                   ))}
                 </ul>
               </Panel>
+
+              {/* Editing Timeline */}
+              {editedTimeline && (
+                <Panel title="Editing Timeline">
+                  <div className="space-y-3">
+                    {/* Visual timeline bar */}
+                    <div className="flex rounded-md overflow-hidden h-6">
+                      {editedTimeline.clips.map((clip) => {
+                        const pct = editedTimeline.totalDurationSec > 0
+                          ? (clip.durationSec / editedTimeline.totalDurationSec) * 100
+                          : 0;
+                        const colors: Record<string, string> = {
+                          hook: "bg-amber-500",
+                          body: "bg-emerald-500",
+                          cta: "bg-blue-500",
+                        };
+                        return (
+                          <div
+                            key={clip.id}
+                            className={`${colors[clip.section]} flex items-center justify-center text-[10px] font-bold text-black/70`}
+                            style={{ width: `${pct}%` }}
+                            title={`${clip.label}: ${clip.startSec}s–${clip.endSec}s`}
+                          >
+                            {clip.label}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Clip details */}
+                    {editedTimeline.clips.map((clip) => {
+                      const borderColors: Record<string, string> = {
+                        hook: "border-amber-500/20",
+                        body: "border-emerald-500/20",
+                        cta: "border-blue-500/20",
+                      };
+                      const textColors: Record<string, string> = {
+                        hook: "text-amber-400",
+                        body: "text-emerald-400",
+                        cta: "text-blue-400",
+                      };
+                      return (
+                        <div
+                          key={clip.id}
+                          className={`border ${borderColors[clip.section]} rounded-md p-2.5 space-y-1`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className={`text-xs font-semibold ${textColors[clip.section]}`}>
+                              {clip.label}
+                            </span>
+                            <span className="text-[10px] text-white/30 font-mono">
+                              {clip.startSec}s – {clip.endSec}s
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-white/30 font-mono">
+                            frames {clip.startFrame}–{clip.endFrame} ({clip.durationFrames}f @ {editedTimeline.fps}fps)
+                          </div>
+                          {clip.footage && (
+                            <div className="text-[11px] text-white/40">
+                              B-roll: {clip.footage}
+                            </div>
+                          )}
+                          {clip.overlays.length > 0 && (
+                            <div className="text-[11px] text-white/40">
+                              {clip.overlays.map((o, i) => (
+                                <div key={i}>{o}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Export buttons */}
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        onClick={exportTimelineJSON}
+                        className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 py-2 rounded-md text-xs font-medium transition-colors cursor-pointer"
+                      >
+                        Download JSON
+                      </button>
+                      <button
+                        onClick={copyTimelineJSON}
+                        className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 py-2 rounded-md text-xs font-medium transition-colors cursor-pointer"
+                      >
+                        Copy JSON
+                      </button>
+                    </div>
+
+                    <div className="text-[10px] text-white/20 leading-relaxed">
+                      Compatible with Remotion, After Effects (via script), Premiere markers, DaVinci Resolve edit lists.
+                    </div>
+                  </div>
+                </Panel>
+              )}
             </div>
           </div>
         )}
