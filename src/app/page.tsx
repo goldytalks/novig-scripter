@@ -128,6 +128,99 @@ function wc(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
+// ── Client-side YouTube transcript extraction ──
+// Runs in the user's browser (residential IP) to bypass YouTube's datacenter blocks
+
+function extractVideoId(url: string): string | null {
+  const m = url.match(
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/
+  );
+  return m ? m[1] : null;
+}
+
+async function clientExtractTranscript(videoId: string): Promise<string | null> {
+  // Method 1: Direct innertube API from browser (residential IP)
+  try {
+    const playerRes = await fetch(
+      "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoId,
+          context: {
+            client: {
+              clientName: "WEB",
+              clientVersion: "2.20240101.00.00",
+              hl: "en",
+            },
+          },
+        }),
+      }
+    );
+
+    if (playerRes.ok) {
+      const playerData = await playerRes.json();
+      const captionTracks =
+        playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (captionTracks && captionTracks.length > 0) {
+        const track =
+          captionTracks.find(
+            (t: { languageCode: string }) => t.languageCode === "en"
+          ) || captionTracks[0];
+
+        const capRes = await fetch(track.baseUrl);
+        const xml = await capRes.text();
+        if (xml && xml.length >= 50) {
+          const matches = [
+            ...xml.matchAll(new RegExp("<text[^>]*>(.*?)</text>", "gs")),
+          ];
+          if (matches.length > 0) {
+            const transcript = matches
+              .map((m) =>
+                m[1]
+                  .replace(/&amp;/g, "&")
+                  .replace(/&lt;/g, "<")
+                  .replace(/&gt;/g, ">")
+                  .replace(/&#39;/g, "'")
+                  .replace(/&quot;/g, '"')
+                  .replace(/\n/g, " ")
+              )
+              .join(" ")
+              .trim();
+            if (transcript.length > 10) {
+              console.log("[client] Direct extraction success:", transcript.length, "chars");
+              return transcript;
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.log("[client] Direct extraction failed:", (e as Error).message);
+  }
+
+  // Method 2: Server proxy (different code path, may work for some videos)
+  try {
+    const proxyRes = await fetch("/api/transcript", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ videoId }),
+    });
+    if (proxyRes.ok) {
+      const data = await proxyRes.json();
+      if (data.transcript && data.transcript.length > 10) {
+        console.log("[client] Server proxy success:", data.transcript.length, "chars");
+        return data.transcript;
+      }
+    }
+  } catch (e) {
+    console.log("[client] Server proxy failed:", (e as Error).message);
+  }
+
+  return null;
+}
+
 export default function Home() {
   const [url, setUrl] = useState("");
   const [manualTranscript, setManualTranscript] = useState("");
@@ -187,12 +280,28 @@ export default function Home() {
     setEditedSections(null);
 
     try {
+      // Try client-side transcript extraction first (browser has residential IP)
+      let clientTranscript = manualTranscript.trim() || undefined;
+      if (!clientTranscript && detectPlatform(url) === "youtube") {
+        const videoId = extractVideoId(url.trim());
+        if (videoId) {
+          console.log("[client] Extracting transcript from browser...");
+          const extracted = await clientExtractTranscript(videoId);
+          if (extracted) {
+            console.log("[client] Got transcript:", extracted.length, "chars");
+            clientTranscript = extracted;
+          } else {
+            console.log("[client] Browser extraction failed, falling back to server");
+          }
+        }
+      }
+
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url: url.trim(),
-          manualTranscript: manualTranscript.trim() || undefined,
+          manualTranscript: clientTranscript,
           settings: {
             ...settings,
             customHook: customHook.trim() || undefined,
