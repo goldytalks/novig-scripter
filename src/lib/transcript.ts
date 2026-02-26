@@ -54,6 +54,44 @@ async function fetchYouTubeMeta(videoId: string): Promise<{
   return { title: "Unknown Title", channel: "Unknown Channel" };
 }
 
+// ── XML Caption Parser (handles both manual <text> and ASR <p><s> formats) ──
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\n/g, " ");
+}
+
+function parseCapionXml(xml: string): string | null {
+  // Format 1: Manual captions — <text start="..." dur="...">words</text>
+  const textMatches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/gs)];
+  if (textMatches.length > 0) {
+    const transcript = textMatches.map((m) => decodeEntities(m[1])).join(" ").trim();
+    if (transcript.length > 10) return transcript;
+  }
+
+  // Format 2: ASR captions — <p t="..." d="..."><s>word</s><s t="...">word</s></p>
+  const pMatches = [...xml.matchAll(/<p [^>]*>([\s\S]*?)<\/p>/gs)];
+  if (pMatches.length > 0) {
+    const words: string[] = [];
+    for (const pm of pMatches) {
+      const sMatches = [...pm[1].matchAll(/<s[^>]*>(.*?)<\/s>/gs)];
+      for (const sm of sMatches) {
+        const word = decodeEntities(sm[1]).trim();
+        if (word) words.push(word);
+      }
+    }
+    const transcript = words.join(" ").trim();
+    if (transcript.length > 10) return transcript;
+  }
+
+  return null;
+}
+
 // ── Method 1a: Innertube ANDROID client (works for Shorts + regular videos) ──
 
 async function tryInnertubeAndroid(videoId: string): Promise<string | null> {
@@ -92,21 +130,8 @@ async function tryInnertubeAndroid(videoId: string): Promise<string | null> {
     const xml = await capRes.text();
     if (!xml || xml.length < 50) return null;
 
-    const matches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/gs)];
-    if (matches.length === 0) return null;
-    const transcript = matches
-      .map((m) =>
-        m[1]
-          .replace(/&amp;/g, "&")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/&#39;/g, "'")
-          .replace(/&quot;/g, '"')
-          .replace(/\n/g, " ")
-      )
-      .join(" ")
-      .trim();
-    if (transcript.length > 10) {
+    const transcript = parseCapionXml(xml);
+    if (transcript && transcript.length > 10) {
       console.log(`[transcript] Innertube ANDROID success: ${transcript.length} chars`);
       return transcript;
     }
@@ -234,21 +259,8 @@ async function tryInvidiousCaptions(videoId: string): Promise<string | null> {
       const xml = await capRes.text();
       if (xml.length < 50) continue;
 
-      // Parse XML captions
-      const textMatches = [...xml.matchAll(new RegExp("<text[^>]*>(.*?)</text>", "gs"))];
-      if (textMatches.length === 0) continue;
-      const transcript = textMatches
-        .map((m) =>
-          m[1]
-            .replace(/&amp;/g, "&")
-            .replace(/&lt;/g, "<")
-            .replace(/&gt;/g, ">")
-            .replace(/&#39;/g, "'")
-            .replace(/&quot;/g, '"')
-        )
-        .join(" ")
-        .trim();
-      if (transcript.length > 10) {
+      const transcript = parseCapionXml(xml);
+      if (transcript && transcript.length > 10) {
         console.log(`[transcript] Invidious (${base}) success: ${transcript.length} chars`);
         return transcript;
       }

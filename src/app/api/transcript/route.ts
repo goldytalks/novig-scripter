@@ -75,26 +75,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "empty_captions" }, { status: 404 });
     }
 
-    // Parse XML
-    const matches = [
-      ...xml.matchAll(new RegExp("<text[^>]*>(.*?)</text>", "gs")),
-    ];
-    if (matches.length === 0) {
-      return NextResponse.json({ error: "no_text_in_captions" }, { status: 404 });
+    // Parse XML — handle both <text> (manual) and <p><s> (ASR) formats
+    let transcript = "";
+
+    // Try <text> tags first (manual captions)
+    const textMatches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/gs)];
+    if (textMatches.length > 0) {
+      transcript = textMatches
+        .map((m) => m[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\n/g, " "))
+        .join(" ").trim();
     }
 
-    const transcript = matches
-      .map((m) =>
-        m[1]
-          .replace(/&amp;/g, "&")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/&#39;/g, "'")
-          .replace(/&quot;/g, '"')
-          .replace(/\n/g, " ")
-      )
-      .join(" ")
-      .trim();
+    // Try <p><s> tags (ASR auto-generated captions)
+    if (!transcript) {
+      const pMatches = [...xml.matchAll(/<p [^>]*>([\s\S]*?)<\/p>/gs)];
+      const words: string[] = [];
+      for (const pm of pMatches) {
+        const sMatches = [...pm[1].matchAll(/<s[^>]*>(.*?)<\/s>/gs)];
+        for (const sm of sMatches) {
+          const word = sm[1].replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\n/g, " ").trim();
+          if (word) words.push(word);
+        }
+      }
+      transcript = words.join(" ").trim();
+    }
 
     if (transcript.length < 10) {
       return NextResponse.json({ error: "transcript_too_short" }, { status: 404 });

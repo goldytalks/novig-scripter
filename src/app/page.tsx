@@ -197,26 +197,30 @@ async function clientExtractTranscript(videoId: string): Promise<string | null> 
         const capRes = await fetch(track.baseUrl);
         const xml = await capRes.text();
         if (xml && xml.length >= 50) {
-          const matches = [
-            ...xml.matchAll(new RegExp("<text[^>]*>(.*?)</text>", "gs")),
-          ];
-          if (matches.length > 0) {
-            const transcript = matches
-              .map((m) =>
-                m[1]
-                  .replace(/&amp;/g, "&")
-                  .replace(/&lt;/g, "<")
-                  .replace(/&gt;/g, ">")
-                  .replace(/&#39;/g, "'")
-                  .replace(/&quot;/g, '"')
-                  .replace(/\n/g, " ")
-              )
-              .join(" ")
-              .trim();
-            if (transcript.length > 10) {
-              console.log("[client] Direct extraction success:", transcript.length, "chars");
-              return transcript;
+          // Try <text> tags (manual captions)
+          let transcript = "";
+          const textMatches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/gs)];
+          if (textMatches.length > 0) {
+            transcript = textMatches
+              .map((m) => m[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\n/g, " "))
+              .join(" ").trim();
+          }
+          // Try <p><s> tags (ASR auto-generated)
+          if (!transcript) {
+            const pMatches = [...xml.matchAll(/<p [^>]*>([\s\S]*?)<\/p>/gs)];
+            const words: string[] = [];
+            for (const pm of pMatches) {
+              const sMatches = [...pm[1].matchAll(/<s[^>]*>(.*?)<\/s>/gs)];
+              for (const sm of sMatches) {
+                const w = sm[1].replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
+                if (w) words.push(w);
+              }
             }
+            transcript = words.join(" ").trim();
+          }
+          if (transcript.length > 10) {
+            console.log("[client] Direct extraction success:", transcript.length, "chars");
+            return transcript;
           }
         }
       }
