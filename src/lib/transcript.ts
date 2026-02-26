@@ -68,18 +68,18 @@ function decodeEntities(s: string): string {
 
 function parseCapionXml(xml: string): string | null {
   // Format 1: Manual captions — <text start="..." dur="...">words</text>
-  const textMatches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/gs)];
+  const textMatches = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)];
   if (textMatches.length > 0) {
     const transcript = textMatches.map((m) => decodeEntities(m[1])).join(" ").trim();
     if (transcript.length > 10) return transcript;
   }
 
   // Format 2: ASR captions — <p t="..." d="..."><s>word</s><s t="...">word</s></p>
-  const pMatches = [...xml.matchAll(/<p [^>]*>([\s\S]*?)<\/p>/gs)];
+  const pMatches = [...xml.matchAll(/<p [^>]*>([\s\S]*?)<\/p>/g)];
   if (pMatches.length > 0) {
     const words: string[] = [];
     for (const pm of pMatches) {
-      const sMatches = [...pm[1].matchAll(/<s[^>]*>(.*?)<\/s>/gs)];
+      const sMatches = [...pm[1].matchAll(/<s[^>]*>([\s\S]*?)<\/s>/g)];
       for (const sm of sMatches) {
         const word = decodeEntities(sm[1]).trim();
         if (word) words.push(word);

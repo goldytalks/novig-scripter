@@ -5,7 +5,7 @@ export const maxDuration = 30;
 // Parse caption XML — handles both <text> (manual) and <p><s> (ASR) formats
 function parseCaptionXml(xml: string): string {
   // Try <text> tags first (manual captions)
-  const textMatches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/gs)];
+  const textMatches = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)];
   if (textMatches.length > 0) {
     const t = textMatches
       .map((m) => m[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\n/g, " "))
@@ -13,11 +13,11 @@ function parseCaptionXml(xml: string): string {
     if (t.length > 10) return t;
   }
   // Try <p><s> tags (ASR auto-generated captions)
-  const pMatches = [...xml.matchAll(/<p [^>]*>([\s\S]*?)<\/p>/gs)];
+  const pMatches = [...xml.matchAll(/<p [^>]*>([\s\S]*?)<\/p>/g)];
   if (pMatches.length > 0) {
     const words: string[] = [];
     for (const pm of pMatches) {
-      const sMatches = [...pm[1].matchAll(/<s[^>]*>(.*?)<\/s>/gs)];
+      const sMatches = [...pm[1].matchAll(/<s[^>]*>([\s\S]*?)<\/s>/g)];
       for (const sm of sMatches) {
         const word = sm[1].replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\n/g, " ").trim();
         if (word) words.push(word);
