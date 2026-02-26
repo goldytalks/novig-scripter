@@ -178,7 +178,7 @@ async function clientExtractTranscript(videoId: string): Promise<string | null> 
         body: JSON.stringify({
           videoId,
           context: {
-            client: { clientName: "WEB", clientVersion: "2.20240101.00.00", hl: "en" },
+            client: { clientName: "ANDROID", clientVersion: "19.09.37", hl: "en", gl: "US", androidSdkVersion: 30 },
           },
         }),
       }

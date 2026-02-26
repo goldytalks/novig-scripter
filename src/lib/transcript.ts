@@ -54,7 +54,69 @@ async function fetchYouTubeMeta(videoId: string): Promise<{
   return { title: "Unknown Title", channel: "Unknown Channel" };
 }
 
-// ── Method 1: YouTube Captions (free, instant) ──
+// ── Method 1a: Innertube ANDROID client (works for Shorts + regular videos) ──
+
+async function tryInnertubeAndroid(videoId: string): Promise<string | null> {
+  try {
+    const playerRes = await fetch(
+      "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoId,
+          context: {
+            client: {
+              clientName: "ANDROID",
+              clientVersion: "19.09.37",
+              hl: "en",
+              gl: "US",
+              androidSdkVersion: 30,
+            },
+          },
+        }),
+      }
+    );
+    if (!playerRes.ok) return null;
+    const playerData = await playerRes.json();
+    const captionTracks =
+      playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (!captionTracks || captionTracks.length === 0) return null;
+
+    const track =
+      captionTracks.find(
+        (t: { languageCode: string }) => t.languageCode === "en"
+      ) || captionTracks[0];
+
+    const capRes = await fetch(track.baseUrl);
+    const xml = await capRes.text();
+    if (!xml || xml.length < 50) return null;
+
+    const matches = [...xml.matchAll(/<text[^>]*>(.*?)<\/text>/gs)];
+    if (matches.length === 0) return null;
+    const transcript = matches
+      .map((m) =>
+        m[1]
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&#39;/g, "'")
+          .replace(/&quot;/g, '"')
+          .replace(/\n/g, " ")
+      )
+      .join(" ")
+      .trim();
+    if (transcript.length > 10) {
+      console.log(`[transcript] Innertube ANDROID success: ${transcript.length} chars`);
+      return transcript;
+    }
+  } catch (e) {
+    console.log(`[transcript] Innertube ANDROID error: ${(e as Error).message}`);
+  }
+  return null;
+}
+
+// ── Method 1b: YouTube Captions via youtube-transcript package ──
 
 async function tryYouTubeCaptions(videoId: string): Promise<string | null> {
   try {
@@ -270,7 +332,16 @@ export async function fetchTranscript(
     if (!videoId) throw new Error("Invalid YouTube URL.");
     const { title, channel } = await fetchYouTubeMeta(videoId);
 
-    // 1. Try YouTube captions (fastest, free)
+    // 1a. Try Innertube ANDROID client (works for Shorts + regular)
+    const innertube = await tryInnertubeAndroid(videoId);
+    if (innertube) {
+      return {
+        transcript: innertube,
+        meta: { videoId, title, channel, platform: "youtube" },
+      };
+    }
+
+    // 1b. Try youtube-transcript package
     const captions = await tryYouTubeCaptions(videoId);
     if (captions) {
       return {

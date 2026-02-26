@@ -25,9 +25,11 @@ export async function POST(req: NextRequest) {
           videoId,
           context: {
             client: {
-              clientName: "WEB",
-              clientVersion: "2.20240101.00.00",
+              clientName: "ANDROID",
+              clientVersion: "19.09.37",
               hl: "en",
+              gl: "US",
+              androidSdkVersion: 30,
             },
           },
         }),
